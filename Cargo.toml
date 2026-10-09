@@ -1,0 +1,14 @@
+[package]
+name = "mechanix-status-bar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mecha-wayland = { git = "https://github.com/indegrowl/mecha-wayland", branch = "dev" }
+
+# ---------------------------------------------------------------------------
+# Local development overrides — uncomment when working on core alongside status bar.
+# Assumes mecha-wayland is cloned as a sibling directory: ../mecha-wayland
+# ---------------------------------------------------------------------------
+# [patch."https://github.com/indegrowl/mecha-wayland"]
+# mecha-wayland = { path = "../mecha-wayland" }
