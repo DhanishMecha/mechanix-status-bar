@@ -1,5 +1,7 @@
 pub mod indicators;
+pub mod services;
 pub mod status_bar;
+pub use services::{WifiModule, WifiStatus};
 
 use mecha_wayland::prelude::*;
 
