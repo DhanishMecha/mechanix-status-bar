@@ -68,7 +68,9 @@ fn on_reply(app: &mut App, e: &MethodReply) {
         .expect("UPower: missing Type")
         .expect("UPower: invalid Type");
 
-    let percentage = battery_valid(app).then(|| battery_percentage(&properties));
+    let percentage = battery_valid(app)
+        .then(|| battery_percentage(&properties))
+        .unwrap(); // percentage has to exist initially
 
     // TODO: main.rs discards the NodeID of the main status bar, store it so we
     // can send events easily
@@ -81,13 +83,15 @@ fn battery_valid(app: &App) -> bool {
     bat_resource.is_present && bat_resource.device_type == upower_types::BATTERY
 }
 
-/// Check battery percentage from a message. Assume battery is valid and
-//percentage field exists
-fn battery_percentage(properties: &PropMap) -> u8 {
-    let percentage = properties
-        .get_as::<f64>("Percentage")
-        .expect("UPower: missing Percentage")
-        .expect("UPower: invalid Percentage");
+/// Check battery percentage from a message. Assume battery is valid
+/// None means the passed in message doesn't have a percentage
+fn battery_percentage(properties: &PropMap) -> Option<u8> {
+    let percentage = properties.get_as::<f64>("Percentage");
+
+    if let None = percentage {
+        return None;
+    }
+    let percentage = percentage.unwrap().expect("UPower: invalid Percentage");
     assert!(percentage.is_finite(), "UPower: non-finite Percentage");
-    percentage.clamp(0.0, 100.0).round() as u8
+    Some(percentage.clamp(0.0, 100.0).round() as u8)
 }
