@@ -3,8 +3,9 @@ use mechanix_status_bar::{StatusBar, StatusUpdate};
 
 // A Rust man's C enum
 mod upower_types {
-    pub const UNKNOWN: u32 = 2;
-    pub const BATTERY: u32 = 2;
+	 type EType = u32;
+    pub const UNKNOWN: EType = 0;
+    pub const BATTERY: EType = 2;
 }
 
 struct UpowerBattery {
