@@ -1,11 +1,18 @@
 use mecha_wayland::prelude::*;
 use mechanix_status_bar::{StatusBar, StatusUpdate};
 
-pub struct UpowerModule;
+// A Rust man's C enum
+mod upower_types {
+    pub const UNKNOWN: u32 = 2;
+    pub const BATTERY: u32 = 2;
+}
 
 struct UpowerBattery {
     property_changed: MatchId,
     initial_read: CallId, // TODO: do something with this so it can be freed / discarded later ?
+
+    is_present: bool,
+    device_type: u32,
 }
 impl Resource for UpowerBattery {}
 
@@ -13,6 +20,7 @@ const UPOWER: &str = "org.freedesktop.UPower";
 const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 const DEVICE_INTERFACE: &str = "org.freedesktop.UPower.Device";
 
+pub struct UpowerModule;
 impl Module for UpowerModule {
     fn install(self, app: &mut App) {
         // watch and initial_read are our MatchId and CallId
@@ -30,6 +38,8 @@ impl Module for UpowerModule {
         app.insert_resource(UpowerBattery {
             initial_read,
             property_changed: watch,
+            is_present: false,                  // to be filled by on_reply
+            device_type: upower_types::UNKNOWN, // to be filled by on_reply
         });
 
         app.system(on_reply);
@@ -47,29 +57,28 @@ fn on_reply(app: &mut App, e: &MethodReply) {
         .body::<(PropMap,)>()
         .expect("UPower: invalid GetAll reply");
 
-    // TODO: main.rs discards the NodeID of the main status bar, store it so we
-    // can send events easily
-    let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
-    // check if Upower.Device Type == 2 and IsPresent == true
-    let percentage = battery_valid(&properties).then(|| battery_percentage(&properties));
-    app.emit(StatusUpdate::Battery(percentage), bars);
-}
-
-// A Rust man's C enum
-mod upower_types {
-    pub const BATTERY: u32 = 2;
-}
-fn battery_valid(properties: &PropMap) -> bool {
-    let is_present = properties
+    let mut bat_resource = app.resource_mut::<UpowerBattery>();
+    bat_resource.is_present = properties
         .get_as::<bool>("IsPresent")
         .expect("UPower: missing IsPresent")
         .expect("UPower: invalid IsPresent");
 
-    let device_type = properties
+    bat_resource.device_type = properties
         .get_as::<u32>("Type")
         .expect("UPower: missing Type")
         .expect("UPower: invalid Type");
-    is_present && device_type == upower_types::BATTERY
+
+    let percentage = battery_valid(app).then(|| battery_percentage(&properties));
+
+    // TODO: main.rs discards the NodeID of the main status bar, store it so we
+    // can send events easily
+    let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
+    app.emit(StatusUpdate::Battery(percentage), bars);
+}
+
+fn battery_valid(app: &App) -> bool {
+    let bat_resource = app.resource::<UpowerBattery>();
+    bat_resource.is_present && bat_resource.device_type == upower_types::BATTERY
 }
 
 /// Check battery percentage from a message. Assume battery is valid and
