@@ -67,7 +67,6 @@ fn main() {
         .add_module(DBusModule::new().system())
         .add_module(WifiModule)
         .add_module(BluetoothModule)
-        .add_module(UpowerModule)
         .add_module(
             WaylandModule::new()
                 .bind::<WlCompositor>()
@@ -83,5 +82,7 @@ fn main() {
 
     let root = app.root();
     app.spawn(root, ShellBuilder { root });
+    // The initial UPower reply emits directly to the existing status bar.
+    app.add_module(UpowerModule);
     app.run();
 }
