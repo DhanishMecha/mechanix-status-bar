@@ -42,7 +42,7 @@ impl Module for UpowerModule {
             device_type: upower_types::UNKNOWN, // to be filled by on_reply
         });
 
-        app.system(on_reply);
+        app.system(on_reply).system(on_property_changed);
     }
 }
 
@@ -80,6 +80,37 @@ fn on_reply(app: &mut App, e: &MethodReply) {
     // can send events easily
     let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
     app.emit(StatusUpdate::Battery(percentage), bars);
+}
+
+fn on_property_changed(app: &mut App, e: &SignalReceived) {
+    if !e
+        .matches
+        .contains(&app.resource::<UpowerBattery>().property_changed)
+    {
+        return;
+    }
+
+    // check if anything we care about is invalidated
+    let (_, changed, invalidated) =
+        PropertiesChanged::parse(&e.msg).expect("UPower: invalid PropertiesChanged signal");
+
+    if invalidated
+        .iter()
+        .any(|name| matches!(name.as_str(), "IsPresent" | "Type" | "Percentage"))
+    {
+        let call = app
+            .resource_mut::<DBus>()
+            .system()
+            .object(UPOWER, DISPLAY_DEVICE)
+            .get_all(DEVICE_INTERFACE); // handled by on_reply
+        app.resource_mut::<UpowerBattery>().property_read = call;
+        return;
+    }
+
+    if let Some(pct) = battery_percentage(&changed) {
+        let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
+        app.emit(StatusUpdate::Battery(Some(pct)), bars);
+    }
 }
 
 fn battery_valid(app: &App) -> bool {
