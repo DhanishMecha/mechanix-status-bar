@@ -5,6 +5,9 @@ use mechanix_status_bar::{
     WifiModule, status_bar,
 };
 
+mod upower;
+use upower::*;
+
 struct Shell;
 struct ShellBuilder {
     root: NodeId,
@@ -64,6 +67,7 @@ fn main() {
         .add_module(DBusModule::new().system())
         .add_module(WifiModule)
         .add_module(BluetoothModule)
+        .add_module(UpowerModule)
         .add_module(
             WaylandModule::new()
                 .bind::<WlCompositor>()
