@@ -121,12 +121,9 @@ fn battery_valid(app: &App) -> bool {
 /// Check battery percentage from a message. Assume battery is valid
 /// None means the passed in message doesn't have a percentage
 fn battery_percentage(properties: &PropMap) -> Option<u8> {
-    let percentage = properties.get_as::<f64>("Percentage");
-
-    if let None = percentage {
-        return None;
-    }
-    let percentage = percentage.unwrap().expect("UPower: invalid Percentage");
+    let percentage = properties
+        .get_as::<f64>("Percentage")?
+        .expect("UPower: invalid Percentage");
     assert!(percentage.is_finite(), "UPower: non-finite Percentage");
     Some(percentage.clamp(0.0, 100.0).round() as u8)
 }
