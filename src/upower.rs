@@ -9,7 +9,7 @@ mod upower_types {
 
 struct UpowerBattery {
     property_changed: MatchId,
-    initial_read: CallId, // TODO: do something with this so it can be freed / discarded later ?
+    property_read: CallId, // The latest GetAll request, including refreshes.
 
     is_present: bool,
     device_type: u32,
@@ -23,20 +23,20 @@ const DEVICE_INTERFACE: &str = "org.freedesktop.UPower.Device";
 pub struct UpowerModule;
 impl Module for UpowerModule {
     fn install(self, app: &mut App) {
-        // watch and initial_read are our MatchId and CallId
-        let (watch, initial_read) = {
+        // watch and property_read are our MatchId and CallId
+        let (watch, property_read) = {
             let mut dbus = app.resource_mut::<DBus>();
             let mut bus = dbus.system();
 
             let watch = bus.watch_properties(UPOWER, DISPLAY_DEVICE, DEVICE_INTERFACE);
 
-            let initial_read = bus.object(UPOWER, DISPLAY_DEVICE).get_all(DEVICE_INTERFACE);
+            let property_read = bus.object(UPOWER, DISPLAY_DEVICE).get_all(DEVICE_INTERFACE);
 
-            (watch, initial_read)
+            (watch, property_read)
         };
 
         app.insert_resource(UpowerBattery {
-            initial_read,
+            property_read,
             property_changed: watch,
             is_present: false,                  // to be filled by on_reply
             device_type: upower_types::UNKNOWN, // to be filled by on_reply
@@ -46,31 +46,35 @@ impl Module for UpowerModule {
     }
 }
 
-/// Handle the initial property snapshot; ignore replies to other calls.
+/// Handle the latest GetAll snapshot, whether initial or a refresh.
 fn on_reply(app: &mut App, e: &MethodReply) {
-    if e.call != app.resource::<UpowerBattery>().initial_read {
+    if e.call != app.resource::<UpowerBattery>().property_read {
         return;
     }
 
-    let msg = e.result.as_ref().expect("UPower: initial GetAll failed");
+    let msg = e.result.as_ref().expect("UPower: GetAll failed");
     let (properties,) = msg
         .body::<(PropMap,)>()
         .expect("UPower: invalid GetAll reply");
 
-    let mut bat_resource = app.resource_mut::<UpowerBattery>();
-    bat_resource.is_present = properties
-        .get_as::<bool>("IsPresent")
-        .expect("UPower: missing IsPresent")
-        .expect("UPower: invalid IsPresent");
+    {
+        let mut bat_resource = app.resource_mut::<UpowerBattery>();
+        bat_resource.is_present = properties
+            .get_as::<bool>("IsPresent")
+            .expect("UPower: missing IsPresent")
+            .expect("UPower: invalid IsPresent");
 
-    bat_resource.device_type = properties
-        .get_as::<u32>("Type")
-        .expect("UPower: missing Type")
-        .expect("UPower: invalid Type");
+        bat_resource.device_type = properties
+            .get_as::<u32>("Type")
+            .expect("UPower: missing Type")
+            .expect("UPower: invalid Type");
+    }
 
-    let percentage = battery_valid(app)
-        .then(|| battery_percentage(&properties))
-        .unwrap(); // percentage has to exist initially
+    let percentage = if battery_valid(app) {
+        Some(battery_percentage(&properties).expect("UPower: missing Percentage"))
+    } else {
+        None
+    };
 
     // TODO: main.rs discards the NodeID of the main status bar, store it so we
     // can send events easily
