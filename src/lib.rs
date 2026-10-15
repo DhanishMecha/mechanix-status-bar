@@ -93,7 +93,7 @@ mod tests {
             app.widget::<BatteryPercentage>(bar_widget.battery)
                 .unwrap()
                 .percentage(),
-            100
+            None
         );
         assert_eq!(
             app.widget::<BluetoothIndicator>(bar_widget.bluetooth)
@@ -289,7 +289,7 @@ mod tests {
         app.emit(StatusUpdate::Bluetooth(BluetoothState::Off), bar);
         app.emit(StatusUpdate::Cellular(CellularState::None), bar);
         app.emit(StatusUpdate::Airplane(AirplaneState::Enabled), bar);
-        app.emit(StatusUpdate::Battery(42), bar);
+        app.emit(StatusUpdate::Battery(Some(42)), bar);
         app.emit(StatusUpdate::Glyph(GlyphState::DEMO), bar);
         app.tick();
 
@@ -321,7 +321,7 @@ mod tests {
             app.widget::<BatteryPercentage>(bar_widget.battery)
                 .unwrap()
                 .percentage(),
-            42
+            Some(42)
         );
         assert_eq!(
             app.widget::<GlyphIndicator>(bar_widget.glyph)
@@ -329,6 +329,28 @@ mod tests {
                 .state(),
             GlyphState::DEMO
         );
+
+        // Unavailable and empty are distinct; updates can restore a percentage.
+        for (input, expected, label) in [
+            (None, None, "N/A"),
+            (Some(0), Some(0), "0%"),
+            (Some(255), Some(100), "100%"),
+            (None, None, "N/A"),
+            (Some(42), Some(42), "42%"),
+        ] {
+            app.emit(StatusUpdate::Battery(input), bar);
+            app.tick();
+
+            let battery = app.widget::<BatteryPercentage>(bar_widget.battery).unwrap();
+            assert_eq!(battery.percentage(), expected);
+            let text = app
+                .widget::<mecha_wayland::mechanix_widgets::prelude::Text>(battery.text_node)
+                .unwrap();
+            let native = app
+                .widget::<mecha_wayland::prelude::Text>(text.native())
+                .unwrap();
+            assert_eq!(native.string, label);
+        }
     }
 
     #[test]

@@ -51,11 +51,8 @@ fn on_reply(app: &mut App, e: &MethodReply) {
     // can send events easily
     let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
     // check if Upower.Device Type == 2 and IsPresent == true
-    if !battery_valid(&properties) {
-        app.emit(StatusUpdate::Battery(0), bars);
-        return;
-    }
-    app.emit(StatusUpdate::Battery(battery_percentage(&properties)), bars);
+    let percentage = battery_valid(&properties).then(|| battery_percentage(&properties));
+    app.emit(StatusUpdate::Battery(percentage), bars);
 }
 
 // A Rust man's C enum
