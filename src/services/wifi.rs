@@ -1,5 +1,5 @@
-//! Read-only NetworkManager client on mecha-wayland's system D-Bus connection.
-use std::collections::HashMap;
+//! Observe NetworkManager's Wi-Fi radio, connected devices, and signal strength.
+use std::collections::{HashMap, HashSet};
 
 use crate::{StatusBar, StatusUpdate, WifiState};
 use mecha_wayland::prelude::*;
@@ -9,28 +9,125 @@ const PATH: &str = "/org/freedesktop/NetworkManager";
 const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const AP: &str = "org.freedesktop.NetworkManager.AccessPoint";
+const WIFI_DEVICE: u32 = 2;
+const ACTIVATED: u32 = 100;
 
-/// Latest observed Wi-Fi state. No active connection is assumed at startup.
-pub struct WifiStatus {
-    pub state: WifiState,
-    enabled: bool,
-    hardware: bool,
-    pending: HashMap<CallId, Request>,
-    connected: Vec<u8>,
-    dirty: bool,
-    properties: MatchId,
-    devices: MatchId,
-    owner: MatchId,
+#[derive(Default)]
+struct Snapshot {
+    radio: Option<bool>,
+    connected: bool,
+    strength: Option<u8>,
+    active_aps: HashSet<ObjectPath>,
+    valid: bool,
 }
-impl Resource for WifiStatus {}
+
+impl Snapshot {
+    fn state(&self) -> Option<WifiState> {
+        if !self.valid {
+            return None;
+        }
+        match self.radio? {
+            false => Some(WifiState::Disabled),
+            true if self.connected => Some(match self.strength {
+                Some(0..=24) | None => WifiState::None,
+                Some(25..=49) => WifiState::Low,
+                Some(50..=74) => WifiState::Medium,
+                Some(_) => WifiState::High,
+            }),
+            true => Some(WifiState::Disconnected),
+        }
+    }
+
+    fn record_strength(&mut self, strength: u8) {
+        self.strength = Some(
+            self.strength
+                .map_or(strength, |current| current.max(strength)),
+        );
+    }
+
+    fn manager(&mut self, props: Option<&PropMap>) -> bool {
+        self.radio = props.and_then(|props| {
+            Some(
+                prop::<bool>(props, "WirelessEnabled")?
+                    && prop::<bool>(props, "WirelessHardwareEnabled")?,
+            )
+        });
+        self.valid &= self.radio.is_some();
+        self.radio == Some(true)
+    }
+
+    fn device(&mut self, props: Option<&PropMap>) -> bool {
+        let Some(props) = props else {
+            self.valid = false;
+            return false;
+        };
+        match prop::<u32>(props, "DeviceType") {
+            Some(WIFI_DEVICE) => match prop::<u32>(props, "State") {
+                Some(ACTIVATED) => {
+                    self.connected = true;
+                    true
+                }
+                Some(_) => false,
+                None => {
+                    self.valid = false;
+                    false
+                }
+            },
+            Some(_) => false,
+            None => {
+                self.valid = false;
+                false
+            }
+        }
+    }
+
+    fn wireless(&mut self, props: Option<&PropMap>) -> Option<ObjectPath> {
+        let ap = props.and_then(|props| prop::<ObjectPath>(props, "ActiveAccessPoint"));
+        match ap {
+            Some(path) if path.as_str() != "/" => {
+                self.active_aps.insert(path.clone()).then_some(path)
+            }
+            Some(_) => None,
+            None => {
+                self.valid = false;
+                None
+            }
+        }
+    }
+
+    fn access_point(&mut self, path: &ObjectPath, props: Option<&PropMap>) {
+        if let Some(props) = props {
+            if self.active_aps.contains(path) {
+                if let Some(strength) = prop::<u8>(props, "Strength") {
+                    self.record_strength(strength);
+                }
+            }
+        } else {
+            self.valid = false;
+        }
+    }
+}
 
 enum Request {
     Manager,
     Devices,
     Device(ObjectPath),
     Wireless,
-    AccessPoint,
+    AccessPoint(ObjectPath),
 }
+
+/// Latest observed Wi-Fi state.
+pub struct WifiStatus {
+    pub state: WifiState,
+    pending: HashMap<CallId, Request>,
+    snapshot: Snapshot,
+    active_aps: HashSet<ObjectPath>,
+    dirty: bool,
+    properties: MatchId,
+    devices: MatchId,
+    owner: MatchId,
+}
+impl Resource for WifiStatus {}
 
 /// Install after `RingModule` and `DBusModule::new().system()`.
 pub struct WifiModule;
@@ -58,10 +155,9 @@ impl Module for WifiModule {
         };
         app.insert_resource(WifiStatus {
             state: WifiState::Disabled,
-            enabled: false,
-            hardware: false,
             pending: HashMap::new(),
-            connected: Vec::new(),
+            snapshot: Snapshot::default(),
+            active_aps: HashSet::new(),
             dirty: false,
             properties,
             devices,
@@ -69,20 +165,16 @@ impl Module for WifiModule {
         });
         app.system(on_reply)
             .system(on_signal)
-            .system(on_disconnected)
-            .system(publish);
+            .system(on_disconnected);
         refresh(app);
     }
 }
 
-fn get_all(app: &mut App, path: &str, interface: &'static str, request: Request) {
+fn get_all(app: &mut App, path: ObjectPath, interface: &'static str, request: Request) {
     let call = app
         .resource_mut::<DBus>()
         .system()
-        .object(
-            NM,
-            ObjectPath::new(path).expect("valid NetworkManager object path"),
-        )
+        .object(NM, path)
         .get_all(interface);
     app.resource_mut::<WifiStatus>()
         .pending
@@ -97,194 +189,487 @@ fn refresh(app: &mut App) {
     {
         let mut wifi = app.resource_mut::<WifiStatus>();
         wifi.dirty = false;
-        wifi.connected.clear();
+        wifi.snapshot = Snapshot {
+            valid: true,
+            ..Snapshot::default()
+        };
     }
-    get_all(app, PATH, NM, Request::Manager);
+    get_all(
+        app,
+        ObjectPath::new(PATH).expect("valid NetworkManager path"),
+        NM,
+        Request::Manager,
+    );
 }
 
-fn property<T: mecha_wayland::dbus::Decode + mecha_wayland::dbus::Type>(
+fn prop<T: mecha_wayland::dbus::Decode + mecha_wayland::dbus::Type>(
     props: &PropMap,
     key: &str,
 ) -> Option<T> {
     props.get_as::<T>(key).and_then(Result::ok)
 }
 
+fn relevant_change(
+    interface: &str,
+    path: Option<&ObjectPath>,
+    changed: &PropMap,
+    invalidated: &[String],
+    active_aps: &HashSet<ObjectPath>,
+    scan_aps: &HashSet<ObjectPath>,
+) -> bool {
+    let keys: &[&str] = match interface {
+        NM if path.is_some_and(|path| path.as_str() == PATH) => {
+            &["WirelessEnabled", "WirelessHardwareEnabled"]
+        }
+        DEVICE => &["State", "DeviceType"],
+        WIRELESS => &["ActiveAccessPoint"],
+        AP if path.is_some_and(|path| active_aps.contains(path) || scan_aps.contains(path)) => {
+            &["Strength"]
+        }
+        _ => &[],
+    };
+    keys.iter()
+        .any(|key| changed.contains_key(*key) || invalidated.iter().any(|v| v == key))
+}
+
+fn publish(app: &mut App, state: WifiState) {
+    let previous = app.resource::<WifiStatus>().state;
+    if previous == state {
+        return;
+    }
+    eprintln!("[wifi] state: {previous:?} -> {state:?}");
+    app.resource_mut::<WifiStatus>().state = state;
+    let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
+    app.emit(StatusUpdate::Wifi(state), bars);
+}
+
+fn reply_props(event: &MethodReply, interface: &str) -> Option<PropMap> {
+    event
+        .result
+        .as_ref()
+        .map_err(|error| eprintln!("[wifi] {interface} GetAll failed: {error:?}"))
+        .ok()
+        .and_then(|message| {
+            message
+                .body::<(PropMap,)>()
+                .map_err(|error| eprintln!("[wifi] failed to parse {interface} GetAll: {error:?}"))
+                .ok()
+        })
+        .map(|(props,)| props)
+}
+
 fn on_reply(app: &mut App, event: &MethodReply) {
     let Some(request) = app.resource_mut::<WifiStatus>().pending.remove(&event.call) else {
         return;
     };
+
     match request {
-        Request::Devices => {
-            if let Ok(message) = &event.result {
-                if let Ok((paths,)) = message.body::<(Vec<ObjectPath>,)>() {
-                    for path in paths {
-                        get_all(app, path.as_str(), DEVICE, Request::Device(path.clone()));
-                    }
-                }
+        Request::Manager => {
+            let props = reply_props(event, NM);
+            if app
+                .resource_mut::<WifiStatus>()
+                .snapshot
+                .manager(props.as_ref())
+            {
+                let call = app.resource_mut::<DBus>().system().object(NM, PATH).call(
+                    NM,
+                    "GetDevices",
+                    &(),
+                );
+                app.resource_mut::<WifiStatus>()
+                    .pending
+                    .insert(call, Request::Devices);
             }
         }
-        request => {
-            let props = event
+        Request::Devices => {
+            if let Some(paths) = event
                 .result
                 .as_ref()
+                .map_err(|error| eprintln!("[wifi] GetDevices failed: {error:?}"))
                 .ok()
-                .and_then(|m| m.body::<(PropMap,)>().ok())
-                .map(|(p,)| p);
-            match (request, props) {
-                (Request::Manager, Some(props)) => {
-                    let enabled = property::<bool>(&props, "WirelessEnabled").unwrap_or(false);
-                    let hardware =
-                        property::<bool>(&props, "WirelessHardwareEnabled").unwrap_or(false);
-                    {
-                        let mut wifi = app.resource_mut::<WifiStatus>();
-                        wifi.enabled = enabled;
-                        wifi.hardware = hardware;
-                    }
-                    if enabled && hardware {
-                        let call = app.resource_mut::<DBus>().system().object(NM, PATH).call(
-                            NM,
-                            "GetDevices",
-                            &(),
-                        );
-                        app.resource_mut::<WifiStatus>()
-                            .pending
-                            .insert(call, Request::Devices);
-                    }
+                .and_then(|message| {
+                    message
+                        .body::<(Vec<ObjectPath>,)>()
+                        .map_err(|error| eprintln!("[wifi] failed to parse GetDevices: {error:?}"))
+                        .ok()
+                })
+                .map(|(paths,)| paths)
+            {
+                for path in paths {
+                    get_all(app, path.clone(), DEVICE, Request::Device(path));
                 }
-                (Request::Manager, None) => {
-                    let mut wifi = app.resource_mut::<WifiStatus>();
-                    wifi.enabled = false;
-                    wifi.hardware = false;
-                }
-                (Request::Device(path), Some(props)) => {
-                    if property::<u32>(&props, "DeviceType") == Some(2)
-                        && property::<u32>(&props, "State") == Some(100)
-                    {
-                        get_all(app, path.as_str(), WIRELESS, Request::Wireless);
-                    }
-                }
-                (Request::Wireless, Some(props)) => {
-                    if let Some(path) = property::<ObjectPath>(&props, "ActiveAccessPoint") {
-                        if path.as_str() != "/" {
-                            get_all(app, path.as_str(), AP, Request::AccessPoint);
-                        }
-                    }
-                }
-                (Request::AccessPoint, Some(props)) => {
-                    app.resource_mut::<WifiStatus>()
-                        .connected
-                        .push(property::<u8>(&props, "Strength").unwrap_or(0));
-                }
-                _ => {}
+            } else {
+                app.resource_mut::<WifiStatus>().snapshot.valid = false;
             }
         }
+        Request::Device(path) => {
+            let props = reply_props(event, DEVICE);
+            if app
+                .resource_mut::<WifiStatus>()
+                .snapshot
+                .device(props.as_ref())
+            {
+                get_all(app, path, WIRELESS, Request::Wireless);
+            }
+        }
+        Request::Wireless => {
+            let props = reply_props(event, WIRELESS);
+            if let Some(path) = app
+                .resource_mut::<WifiStatus>()
+                .snapshot
+                .wireless(props.as_ref())
+            {
+                get_all(app, path.clone(), AP, Request::AccessPoint(path));
+            }
+        }
+        Request::AccessPoint(path) => {
+            let props = reply_props(event, AP);
+            app.resource_mut::<WifiStatus>()
+                .snapshot
+                .access_point(&path, props.as_ref());
+        }
     }
+
     if app.resource::<WifiStatus>().pending.is_empty() {
         if app.resource::<WifiStatus>().dirty {
             refresh(app);
+        } else if let Some(state) = app.resource::<WifiStatus>().snapshot.state() {
+            let aps = app.resource::<WifiStatus>().snapshot.active_aps.clone();
+            app.resource_mut::<WifiStatus>().active_aps = aps;
+            publish(app, state);
         } else {
-            let state = {
-                let wifi = app.resource::<WifiStatus>();
-                classify(
-                    wifi.enabled,
-                    wifi.hardware,
-                    wifi.connected.iter().copied().max(),
-                )
-            };
-            if app.resource::<WifiStatus>().state != state {
-                app.resource_mut::<WifiStatus>().state = state;
-            }
+            eprintln!("[wifi] incomplete NetworkManager snapshot; keeping previous state");
         }
-    }
-}
-
-fn classify(enabled: bool, hardware: bool, strength: Option<u8>) -> WifiState {
-    if !enabled || !hardware {
-        return WifiState::Disabled;
-    }
-    match strength {
-        None => WifiState::Disconnected,
-        Some(0..=29) => WifiState::None,
-        Some(30..=69) => WifiState::Low,
-        Some(_) => WifiState::High,
     }
 }
 
 fn on_signal(app: &mut App, event: &SignalReceived) {
     let wifi = app.resource::<WifiStatus>();
     let owner = event.matches.contains(&wifi.owner);
-    let properties = event.matches.contains(&wifi.properties);
     let devices = event.matches.contains(&wifi.devices);
+    let properties = event.matches.contains(&wifi.properties);
+
     if owner {
         if let Ok((_, _, new_owner)) = event.msg.body::<(String, String, String)>() {
             let mut wifi = app.resource_mut::<WifiStatus>();
             wifi.pending.clear();
-            wifi.connected.clear();
+            wifi.snapshot = Snapshot::default();
+            wifi.active_aps.clear();
             wifi.dirty = false;
-            wifi.state = WifiState::Disabled;
-            drop(wifi);
+            publish(app, WifiState::Disabled);
             if !new_owner.is_empty() {
-                refresh(app);
-            }
-        }
-    } else if properties {
-        if let Ok((interface, changed, invalidated)) = PropertiesChanged::parse(&event.msg) {
-            let keys: &[&str] = match interface.as_str() {
-                NM => &["WirelessEnabled", "WirelessHardwareEnabled"],
-                DEVICE => &["State", "DeviceType"],
-                WIRELESS => &["ActiveAccessPoint"],
-                AP => &["Strength"],
-                _ => &[],
-            };
-            if keys
-                .iter()
-                .any(|key| changed.contains_key(*key) || invalidated.iter().any(|v| v == key))
-            {
                 refresh(app);
             }
         }
     } else if devices
         && matches!(
-            event.msg.member().map(|m| m.as_str()),
+            event.msg.member().map(|member| member.as_str()),
             Some("DeviceAdded" | "DeviceRemoved")
         )
     {
         refresh(app);
+    } else if properties {
+        if let Ok((interface, changed, invalidated)) = PropertiesChanged::parse(&event.msg) {
+            if relevant_change(
+                interface.as_str(),
+                event.msg.path(),
+                &changed,
+                &invalidated,
+                &wifi.active_aps,
+                &wifi.snapshot.active_aps,
+            ) {
+                refresh(app);
+            }
+        }
     }
 }
 
 fn on_disconnected(app: &mut App, event: &BusDisconnected) {
     if event.bus == BusId::System {
+        eprintln!("[wifi] system D-Bus disconnected; resetting state");
         let mut wifi = app.resource_mut::<WifiStatus>();
         wifi.pending.clear();
+        wifi.snapshot = Snapshot::default();
+        wifi.active_aps.clear();
         wifi.dirty = false;
-        wifi.state = WifiState::Disabled;
+        publish(app, WifiState::Disabled);
     }
-}
-
-fn publish(app: &mut App, _: &OnChanged<WifiStatus>) {
-    let state = app.resource::<WifiStatus>().state;
-    let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
-    app.emit(StatusUpdate::Wifi(state), bars);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mecha_wayland::dbus::Value;
+
+    fn props(entries: &[(&str, Value)]) -> PropMap {
+        entries
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect()
+    }
+
     #[test]
-    fn radio_connection_and_strength_states() {
-        assert_eq!(classify(false, true, Some(100)), WifiState::Disabled);
-        assert_eq!(classify(true, false, Some(100)), WifiState::Disabled);
-        assert_eq!(classify(true, true, None), WifiState::Disconnected);
-        for (strength, state) in [
-            (0, WifiState::None),
-            (29, WifiState::None),
-            (30, WifiState::Low),
-            (69, WifiState::Low),
-            (70, WifiState::High),
-            (100, WifiState::High),
+    fn radio_and_connection_states() {
+        let mut snapshot = Snapshot {
+            valid: true,
+            radio: Some(false),
+            connected: true,
+            ..Snapshot::default()
+        };
+        assert_eq!(snapshot.state(), Some(WifiState::Disabled));
+        snapshot.radio = Some(true);
+        snapshot.connected = false;
+        assert_eq!(snapshot.state(), Some(WifiState::Disconnected));
+        snapshot.connected = true;
+        assert_eq!(snapshot.state(), Some(WifiState::None));
+        for (strength, expected) in [
+            (24, WifiState::None),
+            (25, WifiState::Low),
+            (49, WifiState::Low),
+            (50, WifiState::Medium),
+            (74, WifiState::Medium),
+            (75, WifiState::High),
         ] {
-            assert_eq!(classify(true, true, Some(strength)), state);
+            snapshot.strength = Some(strength);
+            assert_eq!(snapshot.state(), Some(expected));
         }
+        snapshot.strength = None;
+        snapshot.record_strength(20);
+        snapshot.record_strength(75);
+        snapshot.record_strength(30);
+        assert_eq!(snapshot.strength, Some(75));
+    }
+
+    #[test]
+    fn incomplete_scan_does_not_publish_disconnected() {
+        let mut snapshot = Snapshot {
+            valid: true,
+            ..Snapshot::default()
+        };
+        assert_eq!(snapshot.state(), None);
+        snapshot.radio = Some(true);
+        snapshot.valid = false;
+        assert_eq!(snapshot.state(), None);
+    }
+
+    #[test]
+    fn manager_requires_a_complete_radio_read() {
+        for (enabled, hardware, expected) in [
+            (true, true, Some(WifiState::Disconnected)),
+            (false, true, Some(WifiState::Disabled)),
+            (true, false, Some(WifiState::Disabled)),
+            (false, false, Some(WifiState::Disabled)),
+        ] {
+            let mut snapshot = Snapshot {
+                valid: true,
+                ..Snapshot::default()
+            };
+            let radio = props(&[
+                ("WirelessEnabled", Value::Bool(enabled)),
+                ("WirelessHardwareEnabled", Value::Bool(hardware)),
+            ]);
+            assert_eq!(snapshot.manager(Some(&radio)), enabled && hardware);
+            assert_eq!(snapshot.state(), expected);
+        }
+        for radio in [
+            None,
+            Some(props(&[("WirelessEnabled", Value::Bool(true))])),
+            Some(props(&[("WirelessEnabled", Value::U32(1))])),
+        ] {
+            let mut snapshot = Snapshot {
+                valid: true,
+                ..Snapshot::default()
+            };
+            assert!(!snapshot.manager(radio.as_ref()));
+            assert_eq!(snapshot.state(), None);
+        }
+    }
+
+    #[test]
+    fn devices_only_follow_activated_wifi_and_preserve_unknown_scans() {
+        let mut snapshot = Snapshot {
+            radio: Some(true),
+            valid: true,
+            ..Snapshot::default()
+        };
+        assert!(!snapshot.device(Some(&props(&[
+            ("DeviceType", Value::U32(1)),
+            ("State", Value::U32(ACTIVATED)),
+        ]))));
+        assert!(!snapshot.device(Some(&props(&[
+            ("DeviceType", Value::U32(WIFI_DEVICE)),
+            ("State", Value::U32(30)),
+        ]))));
+        assert_eq!(snapshot.state(), Some(WifiState::Disconnected));
+        assert!(snapshot.device(Some(&props(&[
+            ("DeviceType", Value::U32(WIFI_DEVICE)),
+            ("State", Value::U32(ACTIVATED)),
+        ]))));
+        assert_eq!(snapshot.state(), Some(WifiState::None));
+        assert!(!snapshot.device(None));
+        assert_eq!(snapshot.state(), None);
+
+        for missing in [
+            props(&[("State", Value::U32(ACTIVATED))]),
+            props(&[("DeviceType", Value::U32(WIFI_DEVICE))]),
+            props(&[("DeviceType", Value::Bool(true))]),
+        ] {
+            let mut snapshot = Snapshot {
+                valid: true,
+                radio: Some(true),
+                ..Snapshot::default()
+            };
+            assert!(!snapshot.device(Some(&missing)));
+            assert_eq!(snapshot.state(), None);
+        }
+    }
+
+    #[test]
+    fn wireless_ap_reads_deduplicate_and_choose_strongest() {
+        let mut snapshot = Snapshot {
+            valid: true,
+            radio: Some(true),
+            connected: true,
+            ..Snapshot::default()
+        };
+        let first = ObjectPath::new("/org/freedesktop/NetworkManager/AccessPoint/1").unwrap();
+        let second = ObjectPath::new("/org/freedesktop/NetworkManager/AccessPoint/2").unwrap();
+        let no_ap = props(&[(
+            "ActiveAccessPoint",
+            Value::ObjectPath(ObjectPath::new("/").unwrap()),
+        )]);
+        assert_eq!(snapshot.wireless(Some(&no_ap)), None);
+        assert_eq!(snapshot.state(), Some(WifiState::None));
+        let first_props = props(&[("ActiveAccessPoint", Value::ObjectPath(first.clone()))]);
+        assert_eq!(snapshot.wireless(Some(&first_props)), Some(first.clone()));
+        assert_eq!(snapshot.wireless(Some(&first_props)), None);
+        snapshot.access_point(&first, Some(&props(&[("Strength", Value::U8(35))])));
+        assert_eq!(snapshot.state(), Some(WifiState::Low));
+        let second_props = props(&[("ActiveAccessPoint", Value::ObjectPath(second.clone()))]);
+        assert_eq!(snapshot.wireless(Some(&second_props)), Some(second.clone()));
+        snapshot.access_point(&second, Some(&props(&[("Strength", Value::U8(80))])));
+        assert_eq!(snapshot.state(), Some(WifiState::High));
+        snapshot.access_point(&first, Some(&props(&[("Strength", Value::U8(15))])));
+        assert_eq!(snapshot.state(), Some(WifiState::High));
+        let unrelated = ObjectPath::new("/org/freedesktop/NetworkManager/AccessPoint/3").unwrap();
+        snapshot.access_point(&unrelated, Some(&props(&[("Strength", Value::U8(100))])));
+        assert_eq!(snapshot.strength, Some(80));
+    }
+
+    #[test]
+    fn missing_ap_properties_do_not_forge_a_connection_or_strength() {
+        for wireless in [None, Some(PropMap::new())] {
+            let mut snapshot = Snapshot {
+                valid: true,
+                radio: Some(true),
+                connected: true,
+                ..Snapshot::default()
+            };
+            assert_eq!(snapshot.wireless(wireless.as_ref()), None);
+            assert_eq!(snapshot.state(), None);
+        }
+        let ap = ObjectPath::new("/org/freedesktop/NetworkManager/AccessPoint/1").unwrap();
+        let mut snapshot = Snapshot {
+            valid: true,
+            radio: Some(true),
+            connected: true,
+            ..Snapshot::default()
+        };
+        snapshot.active_aps.insert(ap.clone());
+        snapshot.access_point(&ap, Some(&PropMap::new()));
+        assert_eq!(snapshot.state(), Some(WifiState::None));
+        snapshot.access_point(&ap, None);
+        assert_eq!(snapshot.state(), None);
+    }
+
+    #[test]
+    fn only_relevant_property_signals_trigger_refresh() {
+        let manager = ObjectPath::new(PATH).unwrap();
+        let ap = ObjectPath::new("/org/freedesktop/NetworkManager/AccessPoint/1").unwrap();
+        let other = ObjectPath::new("/org/freedesktop/NetworkManager/AccessPoint/2").unwrap();
+        let empty = HashSet::new();
+        let active = HashSet::from([ap.clone()]);
+        let changed = props(&[("Strength", Value::U8(50))]);
+        assert!(relevant_change(
+            AP,
+            Some(&ap),
+            &changed,
+            &[],
+            &active,
+            &empty
+        ));
+        assert!(relevant_change(
+            AP,
+            Some(&ap),
+            &changed,
+            &[],
+            &empty,
+            &active
+        ));
+        assert!(!relevant_change(
+            AP,
+            Some(&other),
+            &changed,
+            &[],
+            &active,
+            &empty
+        ));
+        assert!(!relevant_change(AP, None, &changed, &[], &active, &empty));
+        assert!(relevant_change(
+            WIRELESS,
+            Some(&other),
+            &PropMap::new(),
+            &["ActiveAccessPoint".into()],
+            &empty,
+            &empty,
+        ));
+        assert!(relevant_change(
+            DEVICE,
+            Some(&other),
+            &props(&[("DeviceType", Value::U32(WIFI_DEVICE))]),
+            &[],
+            &empty,
+            &empty,
+        ));
+        assert!(relevant_change(
+            NM,
+            Some(&manager),
+            &props(&[("WirelessEnabled", Value::Bool(false))]),
+            &[],
+            &empty,
+            &empty,
+        ));
+        assert!(!relevant_change(
+            NM,
+            Some(&other),
+            &props(&[("WirelessEnabled", Value::Bool(false))]),
+            &[],
+            &empty,
+            &empty,
+        ));
+        assert!(!relevant_change(
+            DEVICE,
+            Some(&other),
+            &props(&[("Ip4Config", Value::U32(1))]),
+            &[],
+            &empty,
+            &empty,
+        ));
+
+        let signal = Message::signal(
+            ap.clone(),
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+        )
+        .with_body(&(AP, PropMap::new(), vec!["Strength".to_string()]));
+        let (interface, changed, invalidated) = PropertiesChanged::parse(&signal).unwrap();
+        assert!(relevant_change(
+            interface.as_str(),
+            signal.path(),
+            &changed,
+            &invalidated,
+            &active,
+            &empty,
+        ));
     }
 }

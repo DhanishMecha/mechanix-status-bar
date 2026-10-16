@@ -1,7 +1,8 @@
 use mecha_wayland::mechanix_widgets::prelude::FontBook;
 use mecha_wayland::prelude::*;
 use mechanix_status_bar::{
-    DEFAULT_BAR_HEIGHT, DEFAULT_ICON_SIZE, GEIST_MONO_BYTES, StatusIcons, WifiModule, status_bar,
+    BluetoothModule, DEFAULT_BAR_HEIGHT, DEFAULT_ICON_SIZE, GEIST_MONO_BYTES, StatusIcons,
+    WifiModule, status_bar,
 };
 
 struct Shell;
@@ -62,6 +63,7 @@ fn main() {
     app.add_module(RingModule::default())
         .add_module(DBusModule::new().system())
         .add_module(WifiModule)
+        .add_module(BluetoothModule)
         .add_module(
             WaylandModule::new()
                 .bind::<WlCompositor>()

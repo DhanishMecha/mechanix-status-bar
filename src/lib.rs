@@ -1,7 +1,7 @@
 pub mod indicators;
 pub mod services;
 pub mod status_bar;
-pub use services::{WifiModule, WifiStatus};
+pub use services::{BluetoothModule, BluetoothStatus, WifiModule, WifiStatus};
 
 use mecha_wayland::prelude::*;
 
@@ -87,7 +87,7 @@ mod tests {
             app.widget::<WifiIndicator>(bar_widget.wifi)
                 .unwrap()
                 .state(),
-            WifiState::High
+            WifiState::Disabled
         );
         assert_eq!(
             app.widget::<BatteryPercentage>(bar_widget.battery)
@@ -99,7 +99,7 @@ mod tests {
             app.widget::<BluetoothIndicator>(bar_widget.bluetooth)
                 .unwrap()
                 .state(),
-            BluetoothState::On
+            BluetoothState::Off
         );
         assert_eq!(
             app.widget::<CellularIndicator>(bar_widget.cellular)
@@ -126,6 +126,7 @@ mod tests {
 
         assert!(!WifiState::Disabled.is_visible());
         assert!(WifiState::High.is_visible());
+        assert!(WifiState::Medium.is_visible());
         assert!(WifiState::Low.is_visible());
         assert!(WifiState::None.is_visible());
 
@@ -190,6 +191,9 @@ mod tests {
         app.tick();
 
         let bar_widget = *app.widget::<StatusBar>(bar).unwrap();
+        app.emit(StatusUpdate::Bluetooth(BluetoothState::On), bar);
+        app.emit(StatusUpdate::Wifi(WifiState::High), bar);
+        app.tick();
 
         // Initially:
         // Airplane is Disabled (Hidden)

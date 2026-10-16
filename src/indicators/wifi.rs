@@ -4,6 +4,7 @@ use crate::indicators::{indicator_layout, load_svg_icon};
 
 mod svg {
     pub const HIGH: &[u8] = include_bytes!("../../assets/wifi/wifi-high.svg");
+    pub const MEDIUM: &[u8] = include_bytes!("../../assets/wifi/wifi-medium.svg");
     pub const LOW: &[u8] = include_bytes!("../../assets/wifi/wifi-low.svg");
     pub const NONE: &[u8] = include_bytes!("../../assets/wifi/wifi-none.svg");
     pub const SLASH: &[u8] = include_bytes!("../../assets/wifi/wifi-slash.svg");
@@ -14,6 +15,7 @@ mod svg {
 pub enum WifiState {
     #[default]
     High,
+    Medium,
     Low,
     None,
     Disabled,
@@ -30,6 +32,7 @@ impl WifiState {
 #[derive(Debug, Clone, Copy)]
 pub struct WifiIcons {
     pub high: SpriteId,
+    pub medium: SpriteId,
     pub low: SpriteId,
     pub none: SpriteId,
     pub slash: SpriteId,
@@ -40,6 +43,7 @@ impl WifiIcons {
     pub fn load(atlas: &mut Atlas, master: u32) -> Result<Self, Error> {
         Ok(Self {
             high: load_svg_icon(atlas, svg::HIGH, master)?,
+            medium: load_svg_icon(atlas, svg::MEDIUM, master)?,
             low: load_svg_icon(atlas, svg::LOW, master)?,
             none: load_svg_icon(atlas, svg::NONE, master)?,
             slash: load_svg_icon(atlas, svg::SLASH, master)?,
@@ -50,6 +54,7 @@ impl WifiIcons {
     pub fn sprite(&self, state: WifiState) -> SpriteId {
         match state {
             WifiState::High => self.high,
+            WifiState::Medium => self.medium,
             WifiState::Low => self.low,
             WifiState::None => self.none,
             WifiState::Disabled => self.slash,

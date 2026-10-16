@@ -65,9 +65,15 @@ impl Widget for StatusBar {
         // This places battery percentage on the rightmost side,
         // and to the left of it: wifi, cellular, bluetooth, airplane.
         let airplane = s.spawn(right_cluster, airplane_indicator(icons.airplane));
-        let bluetooth = s.spawn(right_cluster, bluetooth_indicator(icons.bluetooth));
+        let bluetooth = s.spawn(
+            right_cluster,
+            bluetooth_indicator(icons.bluetooth).state(BluetoothState::Off),
+        );
         let cellular = s.spawn(right_cluster, cellular_indicator(icons.cellular));
-        let wifi = s.spawn(right_cluster, wifi_indicator(icons.wifi));
+        let wifi = s.spawn(
+            right_cluster,
+            wifi_indicator(icons.wifi).state(WifiState::Disabled),
+        );
         let battery = s.spawn(right_cluster, battery_percentage());
 
         // Event handler for external/pluggable status updates (D-Bus or Demo)
