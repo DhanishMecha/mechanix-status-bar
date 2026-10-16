@@ -5,6 +5,9 @@ use mechanix_status_bar::{
     WifiModule, status_bar,
 };
 
+mod upower;
+use upower::*;
+
 struct Shell;
 struct ShellBuilder {
     root: NodeId,
@@ -79,5 +82,7 @@ fn main() {
 
     let root = app.root();
     app.spawn(root, ShellBuilder { root });
+    // The initial UPower reply emits directly to the existing status bar.
+    app.add_module(UpowerModule);
     app.run();
 }

@@ -51,6 +51,7 @@ impl Widget for StatusBar {
             div().style(LayoutStyle::default().row().center().gap(px(8.0))),
         );
         let glyph = s.spawn(left_cluster, glyph_indicator());
+        // TODO: clock here
 
         // Right cluster container: flex row with gap between items
         let right_cluster = s.spawn(
@@ -117,7 +118,7 @@ pub enum StatusUpdate {
     Bluetooth(BluetoothState),
     Cellular(CellularState),
     Airplane(AirplaneState),
-    Battery(u8),
+    Battery(Option<u8>),
     Glyph(GlyphState),
 }
 
