@@ -1,6 +1,10 @@
 use mecha_wayland::prelude::*;
 use mechanix_status_bar::{StatusBar, StatusUpdate};
 
+#[cfg(test)]
+#[path = "test/upower.rs"]
+mod tests;
+
 // A Rust man's C enum
 mod upower_types {
 	 type EType = u32;
