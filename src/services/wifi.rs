@@ -237,7 +237,7 @@ fn publish(app: &mut App, state: WifiState) {
     if previous == state {
         return;
     }
-    eprintln!("[wifi] state: {previous:?} -> {state:?}");
+    // eprintln!("[wifi] state: {previous:?} -> {state:?}");
     app.resource_mut::<WifiStatus>().state = state;
     let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
     app.emit(StatusUpdate::Wifi(state), bars);

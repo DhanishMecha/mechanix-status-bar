@@ -1,7 +1,7 @@
 pub mod indicators;
 pub mod services;
 pub mod status_bar;
-pub use services::{BluetoothModule, BluetoothStatus, WifiModule, WifiStatus};
+pub use services::{BluetoothModule, BluetoothStatus, UpowerModule, WifiModule, WifiStatus};
 
 use mecha_wayland::prelude::*;
 

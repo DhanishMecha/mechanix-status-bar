@@ -218,11 +218,11 @@ fn publish_state(app: &mut App, state: BluetoothState) {
     if app.resource::<BluetoothStatus>().state == state {
         return;
     }
-    eprintln!(
-        "[bluetooth] state: {:?} -> {:?}",
-        app.resource::<BluetoothStatus>().state,
-        state
-    );
+    // eprintln!(
+    //     "[bluetooth] state: {:?} -> {:?}",
+    //     app.resource::<BluetoothStatus>().state,
+    //     state
+    // );
     app.resource_mut::<BluetoothStatus>().state = state;
     let bars: Vec<NodeId> = app.widgets::<StatusBar>().map(|(id, _)| id).collect();
     app.emit(StatusUpdate::Bluetooth(state), bars);

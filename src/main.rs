@@ -2,11 +2,8 @@ use mecha_wayland::mechanix_widgets::prelude::FontBook;
 use mecha_wayland::prelude::*;
 use mechanix_status_bar::{
     BluetoothModule, DEFAULT_BAR_HEIGHT, DEFAULT_ICON_SIZE, GEIST_MONO_BYTES, StatusIcons,
-    WifiModule, status_bar,
+    UpowerModule, WifiModule, status_bar,
 };
-
-mod upower;
-use upower::*;
 
 struct Shell;
 struct ShellBuilder {
