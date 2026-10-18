@@ -70,7 +70,10 @@ impl Widget for StatusBar {
             right_cluster,
             bluetooth_indicator(icons.bluetooth).state(BluetoothState::Off),
         );
-        let cellular = s.spawn(right_cluster, cellular_indicator(icons.cellular));
+        let cellular = s.spawn(
+            right_cluster,
+            cellular_indicator(icons.cellular).state(CellularState::Disabled),
+        );
         let wifi = s.spawn(
             right_cluster,
             wifi_indicator(icons.wifi).state(WifiState::Disabled),

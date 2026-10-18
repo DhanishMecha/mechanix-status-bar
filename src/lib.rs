@@ -105,7 +105,7 @@ mod tests {
             app.widget::<CellularIndicator>(bar_widget.cellular)
                 .unwrap()
                 .state(),
-            CellularState::Full
+            CellularState::Disabled
         );
         assert_eq!(
             app.widget::<AirplaneIndicator>(bar_widget.airplane)
@@ -193,6 +193,7 @@ mod tests {
         let bar_widget = *app.widget::<StatusBar>(bar).unwrap();
         app.emit(StatusUpdate::Bluetooth(BluetoothState::On), bar);
         app.emit(StatusUpdate::Wifi(WifiState::High), bar);
+        app.emit(StatusUpdate::Cellular(CellularState::Full), bar);
         app.tick();
 
         // Initially:

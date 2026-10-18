@@ -1,4 +1,10 @@
-use super::*;
+use super::UpowerModule;
+use super::backend::{
+    DEVICE_INTERFACE, DISPLAY_DEVICE, UPOWER, UpowerBattery, battery_percentage, battery_valid,
+    upower_types,
+};
+use crate::StatusUpdate;
+use mecha_wayland::prelude::*;
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
