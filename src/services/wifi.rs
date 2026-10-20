@@ -1,6 +1,7 @@
 //! Read-only NetworkManager Wi-Fi status service.
 mod backend;
 mod interface;
+mod signal;
 mod snapshot;
 mod types;
 
@@ -9,10 +10,10 @@ mod tests;
 
 pub use types::{WifiState, WifiStatus};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use mecha_wayland::prelude::*;
-use types::{Matches, Snapshot};
+use types::{Matches, Observation};
 
 /// Install after `RingModule` and `DBusModule::new().system()`.
 pub struct WifiModule;
@@ -29,14 +30,13 @@ impl Module for WifiModule {
         };
         app.insert_resource(WifiStatus {
             state: WifiState::Disabled,
+            observed: Observation::default(),
+            scan: None,
             pending: HashMap::new(),
-            snapshot: Snapshot::default(),
-            active_aps: HashSet::new(),
-            dirty: false,
             matches,
         });
-        app.system(backend::on_snapshot_reply)
-            .system(backend::on_signal)
+        app.system(backend::on_reply)
+            .system(signal::on_signal)
             .system(backend::on_disconnect);
         backend::request_snapshot(app);
     }
